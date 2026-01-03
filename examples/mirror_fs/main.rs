@@ -22,10 +22,46 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    let path = std::env::args().nth(1).expect("must supply directory to mirror");
-    let path = PathBuf::from(path);
+    let mut require_privileged_source_port = true;
+    let mut path: Option<PathBuf> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--allow-unprivileged-source-port" => {
+                require_privileged_source_port = false;
+            }
+            "--help" | "-h" => {
+                eprintln!(
+                    "Usage: mirror_fs [--allow-unprivileged-source-port] <DIRECTORY>\n\
+                     \n\
+                     Options:\n\
+                       --allow-unprivileged-source-port  Allow client source ports >= 1024 (default: require privileged)\n\
+                       -h, --help                    Show this help and exit"
+                );
+                return;
+            }
+            _ if arg.starts_with('-') => {
+                eprintln!("Unknown flag: {arg}");
+                eprintln!("Run with --help for usage.");
+                std::process::exit(2);
+            }
+            _ => {
+                if path.is_some() {
+                    eprintln!("Unexpected extra argument: {arg}");
+                    eprintln!("Run with --help for usage.");
+                    std::process::exit(2);
+                }
+                path = Some(PathBuf::from(arg));
+            }
+        }
+    }
+
+    let path = path.expect("must supply directory to mirror");
 
     let fs = fs::MirrorFS::new(path);
-    let listener = NFSTcpListener::bind(&format!("127.0.0.1:{HOSTPORT}"), fs).await.unwrap();
+    let mut listener = NFSTcpListener::bind(&format!("127.0.0.1:{HOSTPORT}"), fs)
+        .await
+        .unwrap();
+    listener.require_privileged_source_port(require_privileged_source_port);
     listener.handle_forever().await.unwrap();
 }

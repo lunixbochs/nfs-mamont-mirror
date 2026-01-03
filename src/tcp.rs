@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::protocol::nfs::portmap::PortmapTable;
 use crate::protocol::{rpc, xdr};
@@ -43,6 +43,8 @@ pub struct NFSTcpListener<T: NFSFileSystem + Send + Sync + 'static> {
     /// Portmap table storing port-to-program mappings
     /// (like a portmap service)
     portmap_table: Arc<RwLock<PortmapTable>>,
+    /// Whether to require clients to use a privileged source port (< 1024)
+    require_privileged_source_port: bool,
 }
 
 /// Generates a local loopback IP address from a 16-bit host number
@@ -228,6 +230,7 @@ impl<T: NFSFileSystem + Send + Sync + 'static> NFSTcpListener<T> {
             export_name: Arc::from("/".to_string()),
             transaction_tracker: Arc::new(rpc::TransactionTracker::new(Duration::from_secs(60))),
             portmap_table: Arc::from(RwLock::from(PortmapTable::default())),
+            require_privileged_source_port: false,
         })
     }
 
@@ -245,6 +248,11 @@ impl<T: NFSFileSystem + Send + Sync + 'static> NFSTcpListener<T> {
             "/{}",
             export_name.as_ref().trim_end_matches('/').trim_start_matches('/')
         ));
+    }
+
+    /// Require clients to use a privileged source port (< 1024) when connecting.
+    pub fn require_privileged_source_port(&mut self, require: bool) {
+        self.require_privileged_source_port = require;
     }
 }
 
@@ -293,10 +301,18 @@ impl<T: NFSFileSystem + Send + Sync + 'static> NFSTcp for NFSTcpListener<T> {
     /// with the underlying TCP listener.
     async fn handle_forever(&self) -> io::Result<()> {
         loop {
-            let (socket, _) = self.listener.accept().await?;
+            let (socket, peer_addr) = self.listener.accept().await?;
+            if self.require_privileged_source_port && peer_addr.port() >= 1024 {
+                warn!(
+                    "Rejecting connection from {}: source port {} is not privileged",
+                    peer_addr.ip(),
+                    peer_addr.port()
+                );
+                continue;
+            }
             let context = rpc::Context {
                 local_port: self.port,
-                client_addr: socket.peer_addr()?.to_string(),
+                client_addr: peer_addr.to_string(),
                 auth: xdr::rpc::auth_unix::default(),
                 vfs: self.arcfs.clone(),
                 mount_signal: self.mount_signal.clone(),
