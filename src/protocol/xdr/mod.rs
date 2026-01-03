@@ -27,6 +27,11 @@ pub mod portmap;
 pub mod rpc;
 mod utils;
 
+/// Cap XDR allocations to the maximum RPC record length to avoid large allocations.
+const MAX_XDR_OPAQUE_LENGTH: usize = crate::protocol::rpc::MAX_RPC_RECORD_LENGTH;
+/// XDR arrays are length-prefixed in 4-byte units; bound the element count conservatively.
+const MAX_XDR_ARRAY_LENGTH: usize = MAX_XDR_OPAQUE_LENGTH / utils::ALIGNMENT;
+
 /// XDR assumes big endian encoding.
 pub type XDREndian = BigEndian;
 
@@ -302,6 +307,9 @@ impl Serialize for [u8] {
 impl Deserialize for Vec<u8> {
     fn deserialize<R: Read>(&mut self, src: &mut R) -> std::io::Result<()> {
         let length = deserialize::<UsizeAsU32>(src)?.0;
+        if length > MAX_XDR_OPAQUE_LENGTH {
+            return Err(utils::invalid_data("XDR opaque length exceeds limit"));
+        }
         self.resize(length, 0);
 
         src.read_exact(self)?;
@@ -386,6 +394,9 @@ impl<T: Serialize> Serialize for [T] {
 impl<T: Deserialize + Clone + Default> Deserialize for Vec<T> {
     fn deserialize<R: Read>(&mut self, src: &mut R) -> std::io::Result<()> {
         let length = deserialize::<UsizeAsU32>(src)?.0;
+        if length > MAX_XDR_ARRAY_LENGTH {
+            return Err(utils::invalid_data("XDR array length exceeds limit"));
+        }
         self.resize(length, T::default()); // TODO(test)
         for i in self {
             i.deserialize(src)?;
