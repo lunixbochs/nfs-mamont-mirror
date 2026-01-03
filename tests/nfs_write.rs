@@ -73,11 +73,12 @@ impl vfs::NFSFileSystem for WriteCaptureFS {
         _offset: u64,
         _data: &[u8],
         stable: nfs3::file::stable_how,
-    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how), nfs3::nfsstat3> {
+    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how, nfs3::count3), nfs3::nfsstat3> {
         *self.captured.lock().unwrap() = Some(stable);
         Ok((
             nfs3::fattr3 { ftype: nfs3::ftype3::NF3REG, fileid: FILE_ID, ..Default::default() },
             nfs3::file::stable_how::DATA_SYNC,
+            4,
         ))
     }
 

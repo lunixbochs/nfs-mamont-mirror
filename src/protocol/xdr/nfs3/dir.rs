@@ -18,14 +18,14 @@
 // for consistency with the NFS version 3 protocol specification
 #![allow(non_camel_case_types)]
 
-use std::io::{Read, Write};
+use std::io::{Error, ErrorKind, Read, Write};
 
 use num_derive::{FromPrimitive, ToPrimitive};
 
 use super::{
     cookie3, cookieverf3, count3, diropargs3, fileid3, filename3, ftype3, nfs_fh3, post_op_attr,
-    post_op_fh3, sattr3, specdata3, symlinkdata3, Deserialize, DeserializeEnum, DeserializeStruct,
-    Serialize, SerializeEnum, SerializeStruct,
+    post_op_fh3, sattr3, specdata3, symlinkdata3, deserialize, Deserialize, DeserializeEnum,
+    DeserializeStruct, Serialize, SerializeEnum, SerializeStruct,
 };
 
 /// Enumeration of device types for special files in NFS version 3
@@ -171,13 +171,13 @@ SerializeStruct!(MKNOD3args, where_dir, what);
 #[allow(non_camel_case_types)]
 #[derive(Debug, Default)]
 pub struct devicedata3 {
-    /// Type of device (character, block, socket, or FIFO)
-    pub dev_type: devicetype3,
+    /// Attributes for the special device
+    pub dev_attributes: sattr3,
     /// Major and minor device numbers for character and block devices
-    pub device: specdata3,
+    pub spec: specdata3,
 }
-DeserializeStruct!(devicedata3, dev_type, device);
-SerializeStruct!(devicedata3, dev_type, device);
+DeserializeStruct!(devicedata3, dev_attributes, spec);
+SerializeStruct!(devicedata3, dev_attributes, spec);
 
 /// Data structure for creating special files
 /// as defined in RFC 1813 section 3.3.11
@@ -187,8 +187,50 @@ SerializeStruct!(devicedata3, dev_type, device);
 pub struct mknoddata3 {
     /// Type of file to create (regular, directory, special file etc)
     pub mknod_type: ftype3,
-    /// Device information if creating a special file
-    pub device: devicedata3,
+    /// Device information for block/character devices
+    pub device: Option<devicedata3>,
+    /// Attributes for FIFO or socket
+    pub pipe_attributes: Option<sattr3>,
 }
-DeserializeStruct!(mknoddata3, mknod_type, device);
-SerializeStruct!(mknoddata3, mknod_type, device);
+
+impl Serialize for mknoddata3 {
+    fn serialize<R: Write>(&self, dest: &mut R) -> std::io::Result<()> {
+        self.mknod_type.serialize(dest)?;
+        match self.mknod_type {
+            ftype3::NF3CHR | ftype3::NF3BLK => {
+                let device = self
+                    .device
+                    .as_ref()
+                    .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing device data"))?;
+                device.serialize(dest)?;
+            }
+            ftype3::NF3SOCK | ftype3::NF3FIFO => {
+                let attrs = self
+                    .pipe_attributes
+                    .as_ref()
+                    .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing pipe attributes"))?;
+                attrs.serialize(dest)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl Deserialize for mknoddata3 {
+    fn deserialize<R: Read>(&mut self, src: &mut R) -> std::io::Result<()> {
+        self.mknod_type.deserialize(src)?;
+        self.device = None;
+        self.pipe_attributes = None;
+        match self.mknod_type {
+            ftype3::NF3CHR | ftype3::NF3BLK => {
+                self.device = Some(deserialize::<devicedata3>(src)?);
+            }
+            ftype3::NF3SOCK | ftype3::NF3FIFO => {
+                self.pipe_attributes = Some(deserialize::<sattr3>(src)?);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}

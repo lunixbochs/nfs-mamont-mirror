@@ -70,6 +70,7 @@ pub async fn nfsproc3_fsinfo(
             error!("nfsproc3_fsinfo error {:?} --> {:?}", xid, stat);
             xdr::rpc::make_success_reply(xid).serialize(output)?;
             stat.serialize(output)?;
+            nfs3::post_op_attr::None.serialize(output)?;
         }
     }
 

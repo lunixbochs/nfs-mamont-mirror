@@ -79,6 +79,7 @@ pub async fn nfsproc3_rename(
         xdr::rpc::make_success_reply(xid).serialize(output)?;
         stat.serialize(output)?;
         nfs3::wcc_data::default().serialize(output)?;
+        nfs3::wcc_data::default().serialize(output)?;
         error!("Directory does not exist");
         return Ok(());
     }
@@ -89,6 +90,7 @@ pub async fn nfsproc3_rename(
         // directory does not exist
         xdr::rpc::make_success_reply(xid).serialize(output)?;
         stat.serialize(output)?;
+        nfs3::wcc_data::default().serialize(output)?;
         nfs3::wcc_data::default().serialize(output)?;
         error!("Directory does not exist");
         return Ok(());
@@ -109,6 +111,7 @@ pub async fn nfsproc3_rename(
             xdr::rpc::make_success_reply(xid).serialize(output)?;
             stat.serialize(output)?;
             nfs3::wcc_data::default().serialize(output)?;
+            nfs3::wcc_data::default().serialize(output)?;
             return Ok(());
         }
     };
@@ -123,6 +126,7 @@ pub async fn nfsproc3_rename(
             error!("Cannot stat directory");
             xdr::rpc::make_success_reply(xid).serialize(output)?;
             stat.serialize(output)?;
+            nfs3::wcc_data::default().serialize(output)?;
             nfs3::wcc_data::default().serialize(output)?;
             return Ok(());
         }

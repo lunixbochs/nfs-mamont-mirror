@@ -100,8 +100,10 @@ pub async fn nfsproc3_access(
     // Check access permissions based on file type and attributes
     let mut granted_access = 0;
 
-    // Always allow LOOKUP for existing objects
-    granted_access |= nfs3::ACCESS3_LOOKUP;
+    // Only grant LOOKUP when requested.
+    if access & nfs3::ACCESS3_LOOKUP != 0 {
+        granted_access |= nfs3::ACCESS3_LOOKUP;
+    }
 
     // Check permissions based on file type
     match attr.ftype {

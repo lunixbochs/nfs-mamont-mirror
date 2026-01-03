@@ -65,6 +65,7 @@ pub async fn nfsproc3_setattr(
     if let Err(stat) = id {
         xdr::rpc::make_success_reply(xid).serialize(output)?;
         stat.serialize(output)?;
+        nfs3::wcc_data::default().serialize(output)?;
         return Ok(());
     }
     let id = id.unwrap();

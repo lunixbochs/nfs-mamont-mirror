@@ -19,13 +19,14 @@ struct TestFS {
     capabilities: Capabilities,
     root_id: nfs3::fileid3,
     attrs: Mutex<HashMap<nfs3::fileid3, nfs3::fattr3>>,
+    lookup_ids: Mutex<HashMap<(nfs3::fileid3, Vec<u8>), nfs3::fileid3>>,
     remove_result: Mutex<Option<Result<(), nfs3::nfsstat3>>>,
     mkdir_result: Mutex<Option<Result<(nfs3::fileid3, nfs3::fattr3), nfs3::nfsstat3>>>,
     create_result: Mutex<Option<Result<(nfs3::fileid3, nfs3::fattr3), nfs3::nfsstat3>>>,
     mknod_result: Mutex<Option<Result<(nfs3::fileid3, nfs3::fattr3), nfs3::nfsstat3>>>,
     mknod_attrs: Mutex<Option<nfs3::sattr3>>,
     write_result: Mutex<
-        Option<Result<(nfs3::fattr3, nfs3::file::stable_how), nfs3::nfsstat3>>,
+        Option<Result<(nfs3::fattr3, nfs3::file::stable_how, nfs3::count3), nfs3::nfsstat3>>,
     >,
     readdir_result: Mutex<Option<Result<ReadDirResult, nfs3::nfsstat3>>>,
     fsinfo_result: Mutex<Option<Result<nfs3::fs::fsinfo3, nfs3::nfsstat3>>>,
@@ -39,6 +40,7 @@ impl TestFS {
             capabilities: Capabilities::ReadWrite,
             root_id: ROOT_ID,
             attrs: Mutex::new(HashMap::new()),
+            lookup_ids: Mutex::new(HashMap::new()),
             remove_result: Mutex::new(None),
             mkdir_result: Mutex::new(None),
             create_result: Mutex::new(None),
@@ -53,6 +55,10 @@ impl TestFS {
 
     fn insert_attr(&self, id: nfs3::fileid3, attr: nfs3::fattr3) {
         self.attrs.lock().unwrap().insert(id, attr);
+    }
+
+    fn insert_lookup(&self, dirid: nfs3::fileid3, name: &[u8], id: nfs3::fileid3) {
+        self.lookup_ids.lock().unwrap().insert((dirid, name.to_vec()), id);
     }
 }
 
@@ -75,10 +81,15 @@ impl vfs::NFSFileSystem for TestFS {
 
     async fn lookup(
         &self,
-        _dirid: nfs3::fileid3,
-        _filename: &nfs3::filename3,
+        dirid: nfs3::fileid3,
+        filename: &nfs3::filename3,
     ) -> Result<nfs3::fileid3, nfs3::nfsstat3> {
-        Err(nfs3::nfsstat3::NFS3ERR_NOTSUPP)
+        self.lookup_ids
+            .lock()
+            .unwrap()
+            .get(&(dirid, filename.as_ref().to_vec()))
+            .copied()
+            .ok_or(nfs3::nfsstat3::NFS3ERR_NOENT)
     }
 
     async fn getattr(&self, id: nfs3::fileid3) -> Result<nfs3::fattr3, nfs3::nfsstat3> {
@@ -96,7 +107,31 @@ impl vfs::NFSFileSystem for TestFS {
         setattr: nfs3::sattr3,
     ) -> Result<nfs3::fattr3, nfs3::nfsstat3> {
         self.setattr_calls.lock().unwrap().push(setattr);
-        self.getattr(id).await
+        let mut attrs = self.attrs.lock().unwrap();
+        let entry = attrs.get_mut(&id).ok_or(nfs3::nfsstat3::NFS3ERR_NOENT)?;
+        if let Some(mode) = setattr.mode {
+            entry.mode = mode;
+        }
+        if let Some(uid) = setattr.uid {
+            entry.uid = uid;
+        }
+        if let Some(gid) = setattr.gid {
+            entry.gid = gid;
+        }
+        if let Some(size) = setattr.size {
+            entry.size = size;
+        }
+        match setattr.atime {
+            nfs3::set_atime::SET_TO_CLIENT_TIME(t) => entry.atime = t,
+            nfs3::set_atime::SET_TO_SERVER_TIME => entry.atime = nfs3::nfstime3::default(),
+            nfs3::set_atime::DONT_CHANGE => {}
+        }
+        match setattr.mtime {
+            nfs3::set_mtime::SET_TO_CLIENT_TIME(t) => entry.mtime = t,
+            nfs3::set_mtime::SET_TO_SERVER_TIME => entry.mtime = nfs3::nfstime3::default(),
+            nfs3::set_mtime::DONT_CHANGE => {}
+        }
+        Ok(*entry)
     }
 
     async fn read(
@@ -114,7 +149,7 @@ impl vfs::NFSFileSystem for TestFS {
         _offset: u64,
         _data: &[u8],
         _stable: nfs3::file::stable_how,
-    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how), nfs3::nfsstat3> {
+    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how, nfs3::count3), nfs3::nfsstat3> {
         if let Some(result) = self.write_result.lock().unwrap().take() {
             return result;
         }
@@ -278,6 +313,8 @@ async fn rmdir_rejects_non_directory_target() {
         ..TestFS::new()
     });
     fs.insert_attr(ROOT_ID, dir_attr(ROOT_ID));
+    fs.insert_attr(2, file_attr(2, 0, 0));
+    fs.insert_lookup(ROOT_ID, b"file", 2);
     let context = make_context(fs.clone());
 
     let args = nfs3::diropargs3 {
@@ -490,12 +527,193 @@ async fn readdir_rejects_bad_cookieverf() {
 }
 
 #[tokio::test]
+async fn readdirplus_rejects_bad_cookieverf() {
+    let fs = Arc::new(TestFS {
+        readdir_result: Mutex::new(Some(Ok(ReadDirResult { entries: Vec::new(), end: true }))),
+        ..TestFS::new()
+    });
+    let mut attr = dir_attr(ROOT_ID);
+    attr.mtime = nfs3::nfstime3 { seconds: 11, nseconds: 22 };
+    fs.insert_attr(ROOT_ID, attr);
+    let context = make_context(fs.clone());
+
+    let args = nfs3::dir::READDIRPLUS3args {
+        dir: fs.id_to_fh(ROOT_ID),
+        cookie: 0,
+        cookieverf: [2; nfs3::NFS3_COOKIEVERFSIZE as usize],
+        dircount: 1024,
+        maxcount: 2048,
+    };
+    let mut input = Cursor::new(Vec::new());
+    args.serialize(&mut input).expect("serialize readdirplus args");
+    input.set_position(0);
+
+    let call = xdr::rpc::call_body {
+        rpcvers: 2,
+        prog: nfs3::PROGRAM,
+        vers: nfs3::VERSION,
+        proc: nfs3::NFSProgram::NFSPROC3_READDIRPLUS as u32,
+        cred: xdr::rpc::opaque_auth::default(),
+        verf: xdr::rpc::opaque_auth::default(),
+    };
+
+    let mut output = Cursor::new(Vec::new());
+    handle_nfs(7, call, &mut input, &mut output, &context)
+        .await
+        .expect("handle_nfs");
+
+    output.set_position(0);
+    let status = read_status(&mut output);
+    assert_eq!(status, nfs3::nfsstat3::NFS3ERR_BAD_COOKIE);
+}
+
+#[tokio::test]
+async fn readdir_uses_sequential_cookies() {
+    let fs = Arc::new(TestFS {
+        readdir_result: Mutex::new(Some(Ok(ReadDirResult {
+            entries: vec![
+                vfs::DirEntry {
+                    fileid: 100,
+                    name: b"alpha".as_ref().into(),
+                    attr: file_attr(100, 0, 0),
+                },
+                vfs::DirEntry {
+                    fileid: 200,
+                    name: b"beta".as_ref().into(),
+                    attr: file_attr(200, 0, 0),
+                },
+            ],
+            end: true,
+        }))),
+        ..TestFS::new()
+    });
+    fs.insert_attr(ROOT_ID, dir_attr(ROOT_ID));
+    let context = make_context(fs.clone());
+
+    let args = nfs3::dir::READDIR3args {
+        dir: fs.id_to_fh(ROOT_ID),
+        cookie: 0,
+        cookieverf: nfs3::cookieverf3::default(),
+        dircount: 4096,
+    };
+    let mut input = Cursor::new(Vec::new());
+    args.serialize(&mut input).expect("serialize readdir args");
+    input.set_position(0);
+
+    let call = xdr::rpc::call_body {
+        rpcvers: 2,
+        prog: nfs3::PROGRAM,
+        vers: nfs3::VERSION,
+        proc: nfs3::NFSProgram::NFSPROC3_READDIR as u32,
+        cred: xdr::rpc::opaque_auth::default(),
+        verf: xdr::rpc::opaque_auth::default(),
+    };
+
+    let mut output = Cursor::new(Vec::new());
+    handle_nfs(8, call, &mut input, &mut output, &context)
+        .await
+        .expect("handle_nfs");
+
+    output.set_position(0);
+    let status = read_status(&mut output);
+    assert_eq!(status, nfs3::nfsstat3::NFS3_OK);
+    let _attr = xdr::deserialize::<nfs3::post_op_attr>(&mut output)
+        .expect("deserialize post_op_attr");
+    let _verf = xdr::deserialize::<nfs3::cookieverf3>(&mut output)
+        .expect("deserialize cookieverf");
+
+    let mut cookies = Vec::new();
+    loop {
+        let has_entry = xdr::deserialize::<bool>(&mut output).expect("deserialize entry flag");
+        if !has_entry {
+            break;
+        }
+        let entry = xdr::deserialize::<nfs3::dir::entry3>(&mut output)
+            .expect("deserialize entry3");
+        cookies.push(entry.cookie);
+    }
+    let _eof = xdr::deserialize::<bool>(&mut output).expect("deserialize eof flag");
+    assert_eq!(cookies, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn readdirplus_uses_sequential_cookies() {
+    let fs = Arc::new(TestFS {
+        readdir_result: Mutex::new(Some(Ok(ReadDirResult {
+            entries: vec![
+                vfs::DirEntry {
+                    fileid: 300,
+                    name: b"gamma".as_ref().into(),
+                    attr: file_attr(300, 0, 0),
+                },
+                vfs::DirEntry {
+                    fileid: 400,
+                    name: b"delta".as_ref().into(),
+                    attr: file_attr(400, 0, 0),
+                },
+            ],
+            end: true,
+        }))),
+        ..TestFS::new()
+    });
+    fs.insert_attr(ROOT_ID, dir_attr(ROOT_ID));
+    let context = make_context(fs.clone());
+
+    let args = nfs3::dir::READDIRPLUS3args {
+        dir: fs.id_to_fh(ROOT_ID),
+        cookie: 0,
+        cookieverf: nfs3::cookieverf3::default(),
+        dircount: 4096,
+        maxcount: 4096,
+    };
+    let mut input = Cursor::new(Vec::new());
+    args.serialize(&mut input).expect("serialize readdirplus args");
+    input.set_position(0);
+
+    let call = xdr::rpc::call_body {
+        rpcvers: 2,
+        prog: nfs3::PROGRAM,
+        vers: nfs3::VERSION,
+        proc: nfs3::NFSProgram::NFSPROC3_READDIRPLUS as u32,
+        cred: xdr::rpc::opaque_auth::default(),
+        verf: xdr::rpc::opaque_auth::default(),
+    };
+
+    let mut output = Cursor::new(Vec::new());
+    handle_nfs(9, call, &mut input, &mut output, &context)
+        .await
+        .expect("handle_nfs");
+
+    output.set_position(0);
+    let status = read_status(&mut output);
+    assert_eq!(status, nfs3::nfsstat3::NFS3_OK);
+    let _attr = xdr::deserialize::<nfs3::post_op_attr>(&mut output)
+        .expect("deserialize post_op_attr");
+    let _verf = xdr::deserialize::<nfs3::cookieverf3>(&mut output)
+        .expect("deserialize cookieverf");
+
+    let mut cookies = Vec::new();
+    loop {
+        let has_entry = xdr::deserialize::<bool>(&mut output).expect("deserialize entry flag");
+        if !has_entry {
+            break;
+        }
+        let entry = xdr::deserialize::<nfs3::dir::entryplus3>(&mut output)
+            .expect("deserialize entryplus3");
+        cookies.push(entry.cookie);
+    }
+    let _eof = xdr::deserialize::<bool>(&mut output).expect("deserialize eof flag");
+    assert_eq!(cookies, vec![1, 2]);
+}
+
+#[tokio::test]
 async fn mkdir_applies_requested_attributes() {
     let fs = Arc::new(TestFS {
         mkdir_result: Mutex::new(Some(Ok((2, dir_attr(2))))),
         ..TestFS::new()
     });
     fs.insert_attr(ROOT_ID, dir_attr(ROOT_ID));
+    fs.insert_attr(2, dir_attr(2));
     let context = make_context(fs.clone());
 
     let mut attrs = nfs3::sattr3::default();
@@ -544,6 +762,8 @@ async fn create_unchecked_updates_existing_attributes() {
         ..TestFS::new()
     });
     fs.insert_attr(ROOT_ID, dir_attr(ROOT_ID));
+    fs.insert_attr(2, file_attr(2, 0, 0));
+    fs.insert_lookup(ROOT_ID, b"file", 2);
     let context = make_context(fs.clone());
 
     let mut attrs = nfs3::sattr3::default();
@@ -599,10 +819,17 @@ async fn mknod_passes_pipe_attributes() {
 
     let dirops = nfs3::diropargs3 { dir: fs.id_to_fh(ROOT_ID), name: b"pipe".as_ref().into() };
 
+    let args = nfs3::dir::MKNOD3args {
+        where_dir: dirops,
+        what: nfs3::dir::mknoddata3 {
+            mknod_type: nfs3::ftype3::NF3FIFO,
+            device: None,
+            pipe_attributes: Some(attrs),
+        },
+    };
+
     let mut input = Cursor::new(Vec::new());
-    dirops.serialize(&mut input).expect("serialize dirops");
-    nfs3::ftype3::NF3FIFO.serialize(&mut input).expect("serialize ftype");
-    attrs.serialize(&mut input).expect("serialize attrs");
+    args.serialize(&mut input).expect("serialize mknod args");
     input.set_position(0);
 
     let call = xdr::rpc::call_body {
@@ -627,7 +854,11 @@ async fn mknod_passes_pipe_attributes() {
 async fn write_reports_actual_count() {
     let file_id = 2;
     let fs = Arc::new(TestFS {
-        write_result: Mutex::new(Some(Ok((file_attr(file_id, 0, 2), nfs3::file::stable_how::FILE_SYNC)))),
+        write_result: Mutex::new(Some(Ok((
+            file_attr(file_id, 0, 2),
+            nfs3::file::stable_how::FILE_SYNC,
+            2,
+        )))),
         ..TestFS::new()
     });
     fs.insert_attr(file_id, file_attr(file_id, 0, 2));

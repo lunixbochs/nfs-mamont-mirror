@@ -62,6 +62,7 @@ mod readdir;
 mod readdirplus;
 mod readlink;
 mod remove;
+mod rmdir;
 mod rename;
 mod setattr;
 mod symlink;
@@ -84,6 +85,7 @@ use readdir::nfsproc3_readdir;
 use readdirplus::nfsproc3_readdirplus;
 use readlink::nfsproc3_readlink;
 use remove::nfsproc3_remove;
+use rmdir::nfsproc3_rmdir;
 use rename::nfsproc3_rename;
 use setattr::nfsproc3_setattr;
 use symlink::nfsproc3_symlink;
@@ -139,7 +141,7 @@ pub async fn handle_nfs(
         nfs3::NFSProgram::NFSPROC3_CREATE => nfsproc3_create(xid, input, output, context).await?,
         nfs3::NFSProgram::NFSPROC3_SETATTR => nfsproc3_setattr(xid, input, output, context).await?,
         nfs3::NFSProgram::NFSPROC3_REMOVE => nfsproc3_remove(xid, input, output, context).await?,
-        nfs3::NFSProgram::NFSPROC3_RMDIR => nfsproc3_remove(xid, input, output, context).await?,
+        nfs3::NFSProgram::NFSPROC3_RMDIR => nfsproc3_rmdir(xid, input, output, context).await?,
         nfs3::NFSProgram::NFSPROC3_RENAME => nfsproc3_rename(xid, input, output, context).await?,
         nfs3::NFSProgram::NFSPROC3_MKDIR => nfsproc3_mkdir(xid, input, output, context).await?,
         nfs3::NFSProgram::NFSPROC3_SYMLINK => nfsproc3_symlink(xid, input, output, context).await?,

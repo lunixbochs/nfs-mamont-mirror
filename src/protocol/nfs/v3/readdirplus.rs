@@ -78,6 +78,21 @@ pub async fn nfsproc3_readdirplus(
     debug!(" -- Dir attr {:?}", dir_attr);
     debug!(" -- Dir version {:?}", dirversion);
     let has_version = args.cookieverf != nfs3::cookieverf3::default();
+    if has_version && args.cookieverf != dirversion {
+        xdr::rpc::make_success_reply(xid).serialize(output)?;
+        nfs3::nfsstat3::NFS3ERR_BAD_COOKIE.serialize(output)?;
+        dir_attr.serialize(output)?;
+        return Ok(());
+    }
+    let start_index = match usize::try_from(args.cookie) {
+        Ok(idx) => idx,
+        Err(_) => {
+            xdr::rpc::make_success_reply(xid).serialize(output)?;
+            nfs3::nfsstat3::NFS3ERR_BAD_COOKIE.serialize(output)?;
+            dir_attr.serialize(output)?;
+            return Ok(());
+        }
+    };
     // initial call should hve empty cookie verf
     // subsequent calls should have cvf_version as defined above
     // which is based off the mtime.
@@ -145,10 +160,14 @@ pub async fn nfsproc3_readdirplus(
     let max_bytes_allowed = (args.maxcount as usize).saturating_sub(128);
     // args.dircount is bytes of just fileid, name, cookie.
     // This is hard to ballpark, so we just divide it by 16
-    let estimated_max_results = args.dircount / 16;
+    let estimated_max_results = std::cmp::max(1, args.dircount / 16) as usize;
     let max_dircount_bytes = args.dircount as usize;
     let mut ctr = 0;
-    match context.vfs.readdir(dirid, args.cookie, estimated_max_results as usize).await {
+    match context
+        .vfs
+        .readdir_index(dirid, start_index, estimated_max_results)
+        .await
+    {
         Ok(result) => {
             // we count dir_count seperately as it is just a subset of fields
             let mut accumulated_dircount: usize = 0;
@@ -162,17 +181,20 @@ pub async fn nfsproc3_readdirplus(
             nfs3::nfsstat3::NFS3_OK.serialize(&mut counting_output)?;
             dir_attr.serialize(&mut counting_output)?;
             dirversion.serialize(&mut counting_output)?;
-            for entry in result.entries {
+            let mut current_index = start_index;
+            for entry in result.entries.into_iter() {
                 let obj_attr = entry.attr;
                 let handle = nfs3::post_op_fh3::Some(context.vfs.id_to_fh(entry.fileid));
+                let next_cookie = current_index.saturating_add(1) as nfs3::cookie3;
 
                 let entry = nfs3::dir::entryplus3 {
                     fileid: entry.fileid,
                     name: entry.name,
-                    cookie: entry.fileid,
+                    cookie: next_cookie,
                     name_attributes: nfs3::post_op_attr::Some(obj_attr),
                     name_handle: handle,
                 };
+                current_index = current_index.saturating_add(1);
                 // write the entry into a buffer first
                 let mut write_buf: Vec<u8> = Vec::new();
                 let mut write_cursor = std::io::Cursor::new(&mut write_buf);

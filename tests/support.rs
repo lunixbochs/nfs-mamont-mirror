@@ -50,7 +50,7 @@ impl vfs::NFSFileSystem for DemoFS {
         _offset: u64,
         _data: &[u8],
         _stable: nfs3::file::stable_how,
-    ) -> Result<(fattr3, nfs3::file::stable_how), nfsstat3> {
+    ) -> Result<(fattr3, nfs3::file::stable_how, nfs3::count3), nfsstat3> {
         Err(nfsstat3::NFS3ERR_NOTSUPP)
     }
 

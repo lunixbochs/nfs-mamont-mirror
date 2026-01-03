@@ -81,7 +81,7 @@ impl vfs::NFSFileSystem for ExclusiveCaptureFS {
         _offset: u64,
         _data: &[u8],
         _stable: nfs3::file::stable_how,
-    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how), nfs3::nfsstat3> {
+    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how, nfs3::count3), nfs3::nfsstat3> {
         Err(nfs3::nfsstat3::NFS3ERR_NOTSUPP)
     }
 

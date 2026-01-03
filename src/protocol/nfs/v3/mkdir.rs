@@ -95,12 +95,32 @@ pub async fn nfsproc3_mkdir(
     match res {
         Ok((fid, fattr)) => {
             debug!("mkdir success --> {:?}, {:?}", fid, fattr);
+            let mut applied_attr = fattr;
+            let has_attrs = args.attributes.mode.is_some()
+                || args.attributes.uid.is_some()
+                || args.attributes.gid.is_some()
+                || args.attributes.size.is_some()
+                || !matches!(args.attributes.atime, nfs3::set_atime::DONT_CHANGE)
+                || !matches!(args.attributes.mtime, nfs3::set_mtime::DONT_CHANGE);
+            if has_attrs {
+                match context.vfs.setattr(fid, args.attributes).await {
+                    Ok(updated) => {
+                        applied_attr = updated;
+                    }
+                    Err(stat) => {
+                        xdr::rpc::make_success_reply(xid).serialize(output)?;
+                        stat.serialize(output)?;
+                        wcc_res.serialize(output)?;
+                        return Ok(());
+                    }
+                }
+            }
             xdr::rpc::make_success_reply(xid).serialize(output)?;
             nfs3::nfsstat3::NFS3_OK.serialize(output)?;
             // serialize CREATE3resok
             let fh = context.vfs.id_to_fh(fid);
             nfs3::post_op_fh3::Some(fh).serialize(output)?;
-            nfs3::post_op_attr::Some(fattr).serialize(output)?;
+            nfs3::post_op_attr::Some(applied_attr).serialize(output)?;
             wcc_res.serialize(output)?;
         }
         Err(e) => {

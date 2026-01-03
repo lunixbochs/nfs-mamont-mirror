@@ -90,14 +90,14 @@ pub async fn nfsproc3_write(
     };
 
     match context.vfs.write(id, args.offset, &args.data, stable).await {
-        Ok((fattr, committed)) => {
+        Ok((fattr, committed, count)) => {
             debug!("write success {:?} --> {:?}", xid, fattr);
             let res = nfs3::file::WRITE3resok {
                 file_wcc: nfs3::wcc_data {
                     before: pre_obj_attr,
                     after: nfs3::post_op_attr::Some(fattr),
                 },
-                count: args.count,
+                count,
                 committed,
                 verf: context.vfs.server_id(),
             };

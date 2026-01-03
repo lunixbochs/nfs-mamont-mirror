@@ -82,15 +82,32 @@ pub async fn nfsproc3_mknod(
         .map(|v| nfs3::wcc_attr { size: v.size, mtime: v.mtime, ctime: v.ctime })
         .ok();
 
-    // Create default attributes if necessary
-    let attr = nfs3::sattr3::default();
+    let pipe_attrs = args.what.pipe_attributes.unwrap_or_default();
+    let (ftype, specdata, attrs) = match args.what.mknod_type {
+        nfs3::ftype3::NF3CHR | nfs3::ftype3::NF3BLK => match args.what.device.as_ref() {
+            Some(device) => (args.what.mknod_type, device.spec, &device.dev_attributes),
+            None => {
+                xdr::rpc::make_success_reply(xid).serialize(output)?;
+                nfs3::nfsstat3::NFS3ERR_INVAL.serialize(output)?;
+                let post_dir_attr = context.vfs.getattr(dirid).await.ok();
+                nfs3::wcc_data { before: pre_dir_attr, after: post_dir_attr }.serialize(output)?;
+                return Ok(());
+            }
+        },
+        nfs3::ftype3::NF3SOCK | nfs3::ftype3::NF3FIFO => {
+            (args.what.mknod_type, nfs3::specdata3::default(), &pipe_attrs)
+        }
+        _ => {
+            xdr::rpc::make_success_reply(xid).serialize(output)?;
+            nfs3::nfsstat3::NFS3ERR_INVAL.serialize(output)?;
+            let post_dir_attr = context.vfs.getattr(dirid).await.ok();
+            nfs3::wcc_data { before: pre_dir_attr, after: post_dir_attr }.serialize(output)?;
+            return Ok(());
+        }
+    };
 
     // Call VFS mknod method
-    match context
-        .vfs
-        .mknod(dirid, &args.where_dir.name, args.what.mknod_type, args.what.device.device, &attr)
-        .await
-    {
+    match context.vfs.mknod(dirid, &args.where_dir.name, ftype, specdata, attrs).await {
         Ok((fid, fattr)) => {
             debug!("nfsproc3_mknod success --> {:?}, {:?}", fid, fattr);
 

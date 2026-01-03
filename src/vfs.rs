@@ -105,10 +105,10 @@ pub enum Capabilities {
 //
 /// readdir pagination
 /// ------------------
-/// We do not use cookie verifier. We just use the start_after.  The
-/// implementation should allow startat to start at any position. That is,
-/// the next query to readdir may be the last entry in the previous readdir
-/// response.
+/// The NFS layer uses opaque cookies derived from directory ordering and
+/// validates cookieverf against directory metadata. Implementations should
+/// return entries in a stable order across calls; the server may request
+/// entries from the start and skip based on the cookie index.
 //
 /// There is a wierd annoying thing about readdir that limits the number
 /// of bytes in the response (instead of the number of entries). The caller
@@ -229,7 +229,7 @@ pub trait NFSFileSystem: Sync {
         offset: u64,
         data: &[u8],
         stable: nfs3::file::stable_how,
-    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how), nfs3::nfsstat3>;
+    ) -> Result<(nfs3::fattr3, nfs3::file::stable_how, nfs3::count3), nfs3::nfsstat3>;
 
     /// Creates a new file with the specified attributes
     ///
@@ -344,6 +344,39 @@ pub trait NFSFileSystem: Sync {
         max_entries: usize,
     ) -> Result<ReadDirResult, nfs3::nfsstat3>;
 
+    /// Reads directory entries starting at a cookie index
+    ///
+    /// This provides a more direct pagination interface for NFS cookies that
+    /// represent entry indices. Implementations can override this to avoid
+    /// rescanning from the beginning of the directory.
+    ///
+    /// # Arguments
+    /// * `dirid` - The directory ID to read
+    /// * `start_index` - Zero-based entry index to start at
+    /// * `max_entries` - Maximum number of entries to return
+    ///
+    /// # Returns
+    /// * `Result<ReadDirResult, nfsstat3>` - Directory entries and EOF flag on success, or an NFS error code
+    async fn readdir_index(
+        &self,
+        dirid: nfs3::fileid3,
+        start_index: usize,
+        max_entries: usize,
+    ) -> Result<ReadDirResult, nfs3::nfsstat3> {
+        let request_count = start_index.saturating_add(max_entries);
+        let mut result = self.readdir(dirid, 0, request_count).await?;
+        if start_index > result.entries.len()
+            || (start_index == result.entries.len() && !result.end)
+        {
+            return Err(nfs3::nfsstat3::NFS3ERR_BAD_COOKIE);
+        }
+        if start_index == 0 {
+            return Ok(result);
+        }
+        let entries = result.entries.split_off(start_index);
+        Ok(ReadDirResult { entries, end: result.end })
+    }
+
     /// Simplified version of readdir that returns only file names and IDs
     ///
     /// This is a convenience method that provides a simpler interface when full
@@ -365,6 +398,20 @@ pub trait NFSFileSystem: Sync {
     ) -> Result<ReadDirSimpleResult, nfs3::nfsstat3> {
         Ok(ReadDirSimpleResult::from_readdir_result(
             &self.readdir(dirid, start_after, count).await?,
+        ))
+    }
+
+    /// Simplified readdir using an index-based cookie
+    ///
+    /// This default implementation delegates to `readdir_index` and drops attributes.
+    async fn readdir_simple_index(
+        &self,
+        dirid: nfs3::fileid3,
+        start_index: usize,
+        count: usize,
+    ) -> Result<ReadDirSimpleResult, nfs3::nfsstat3> {
+        Ok(ReadDirSimpleResult::from_readdir_result(
+            &self.readdir_index(dirid, start_index, count).await?,
         ))
     }
 

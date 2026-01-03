@@ -310,7 +310,7 @@ impl vfs::NFSFileSystem for MirrorFS {
         offset: u64,
         data: &[u8],
         _stable: nfs3::file::stable_how,
-    ) -> NFSResult<(nfs3::fattr3, nfs3::file::stable_how)> {
+    ) -> NFSResult<(nfs3::fattr3, nfs3::file::stable_how, nfs3::count3)> {
         let fsmap = self.fsmap.lock().await;
         let ent = fsmap.find_entry(id)?;
         let path = fsmap.sym_to_path(&ent.name).await;
@@ -335,7 +335,11 @@ impl vfs::NFSFileSystem for MirrorFS {
         let _ = f.flush().await;
         let _ = f.sync_all().await;
         let meta = f.metadata().await.or(Err(nfs3::nfsstat3::NFS3ERR_IO))?;
-        Ok((metadata_to_fattr3(id, &meta), nfs3::file::stable_how::FILE_SYNC))
+        Ok((
+            metadata_to_fattr3(id, &meta),
+            nfs3::file::stable_how::FILE_SYNC,
+            data.len() as nfs3::count3,
+        ))
     }
 
     /// Creates a file in a directory

@@ -129,6 +129,23 @@ pub async fn nfsproc3_create(
         let verifier = create_verifier.unwrap_or_default();
         fid = context.vfs.create_exclusive(dirid, &dirops.name, verifier).await;
         postopattr = nfs3::post_op_attr::None;
+    } else if matches!(createhow, nfs3::createmode3::UNCHECKED) {
+        if let Ok(existing_id) = context.vfs.lookup(dirid, &dirops.name).await {
+            match context.vfs.setattr(existing_id, target_attributes).await {
+                Ok(attr) => {
+                    fid = Ok(existing_id);
+                    postopattr = nfs3::post_op_attr::Some(attr);
+                }
+                Err(stat) => {
+                    fid = Err(stat);
+                    postopattr = nfs3::post_op_attr::None;
+                }
+            }
+        } else {
+            let res = context.vfs.create(dirid, &dirops.name, target_attributes).await;
+            fid = res.map(|x| x.0);
+            postopattr = res.map(|(_, fattr)| fattr).ok();
+        }
     } else {
         // create!
         let res = context.vfs.create(dirid, &dirops.name, target_attributes).await;
