@@ -142,7 +142,7 @@ pub async fn nfsproc3_readdirplus(
         return Ok(());
     }*/
     // subtract off the final entryplus* field (which must be false) and the eof
-    let max_bytes_allowed = args.maxcount as usize - 128;
+    let max_bytes_allowed = (args.maxcount as usize).saturating_sub(128);
     // args.dircount is bytes of just fileid, name, cookie.
     // This is hard to ballpark, so we just divide it by 16
     let estimated_max_results = args.dircount / 16;
