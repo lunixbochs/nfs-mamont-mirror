@@ -158,6 +158,13 @@ async fn read_fragment(
     let is_last = (fragment_header & (1 << 31)) > 0;
     let length = (fragment_header & ((1 << 31) - 1)) as usize;
     trace!("Reading fragment length:{}, last:{}", length, is_last);
+    if append_to.len().saturating_add(length) > rpc::MAX_RPC_RECORD_LENGTH {
+        return Err(anyhow!(
+            "RPC record length {} exceeds max {}",
+            length,
+            rpc::MAX_RPC_RECORD_LENGTH
+        ));
+    }
     let start_offset = append_to.len();
     append_to.resize(append_to.len() + length, 0);
     socket.read_exact(&mut append_to[start_offset..]).await?;

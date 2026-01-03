@@ -32,3 +32,11 @@ mod wire;
 pub use context::Context;
 pub use transaction_tracker::TransactionTracker;
 pub use wire::{write_fragment, SocketMessageHandler};
+
+/// Linux-compatible max NFS block size (RPCSVC_MAXPAYLOAD).
+pub const MAX_BLOCK_SIZE: usize = 4 * 1024 * 1024;
+/// Linux PAGE_SIZE, used to derive the max RPC record length.
+pub const PAGE_SIZE: usize = 4096;
+/// Max RPC record length for TCP (roundup(MAX_BLOCK_SIZE + PAGE_SIZE, PAGE_SIZE)).
+pub const MAX_RPC_RECORD_LENGTH: usize =
+    ((MAX_BLOCK_SIZE + PAGE_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;

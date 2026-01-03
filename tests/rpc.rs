@@ -27,6 +27,59 @@ fn test_context() -> Context {
 }
 
 #[tokio::test]
+async fn rejects_oversized_rpc_fragment() {
+    let (mut handler, mut socksend, _msgrecv) = SocketMessageHandler::new(&test_context());
+
+    let oversized = nfs_mamont::protocol::rpc::MAX_RPC_RECORD_LENGTH + 1;
+    let fragment_header = (1_u32 << 31) | (oversized as u32);
+    socksend
+        .write_all(&fragment_header.to_be_bytes())
+        .await
+        .expect("write fragment header");
+
+    let err = handler.read().await.expect_err("expected oversize error");
+    assert!(
+        err.to_string().contains("exceeds max"),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn accepts_rpc_fragment_under_limit() {
+    let xid = 7;
+    let call = xdr::rpc::call_body {
+        rpcvers: 2,
+        prog: nfs3::PROGRAM,
+        vers: nfs3::VERSION + 1,
+        proc: 0,
+        cred: xdr::rpc::opaque_auth::default(),
+        verf: xdr::rpc::opaque_auth::default(),
+    };
+    let msg = xdr::rpc::rpc_msg { xid, body: xdr::rpc::rpc_body::CALL(call) };
+    let mut msg_buf = Vec::new();
+    msg.serialize(&mut msg_buf).expect("serialize rpc_msg");
+
+    let (mut handler, mut socksend, mut msgrecv) = SocketMessageHandler::new(&test_context());
+    let fragment_header = (1_u32 << 31) | (msg_buf.len() as u32);
+    socksend
+        .write_all(&fragment_header.to_be_bytes())
+        .await
+        .expect("write fragment header");
+    socksend.write_all(&msg_buf).await.expect("write fragment body");
+
+    handler.read().await.expect("handler read");
+
+    let response = timeout(Duration::from_secs(1), msgrecv.recv())
+        .await
+        .expect("response timeout")
+        .expect("response channel closed")
+        .expect("response error");
+    let reply = xdr::deserialize::<xdr::rpc::rpc_msg>(&mut Cursor::new(response))
+        .expect("deserialize reply");
+    assert_eq!(reply.xid, xid);
+}
+
+#[tokio::test]
 async fn returns_prog_mismatch_for_unsupported_nfs_version() {
     let xid = 42;
     let call = xdr::rpc::call_body {
