@@ -2,7 +2,6 @@
 name = "nfs-mamont"
 version = "0.0.0"
 edition = "2021"
-authors = ["Ryan Hileman", "KNS Group LLC (YADRO)"]
 description = "A Rust NFS Server implementation"
 publish = false
 rust-version = "1.83.0"
